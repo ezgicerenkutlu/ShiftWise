@@ -182,7 +182,13 @@ Deno.serve(async (req: Request) => {
 
     let redirectTo: string;
     try {
-      const configuredAppUrl = new URL(appUrl);
+      // Keep invitation links inside the same environment that initiated the
+      // request. Preview invites must not accidentally redirect to Production.
+      const previewAppUrl = Deno.env.get("PREVIEW_APP_URL");
+      const redirectBase = requestOrigin && previewAppUrl && new URL(previewAppUrl).origin === requestOrigin
+        ? previewAppUrl
+        : appUrl;
+      const configuredAppUrl = new URL(redirectBase);
       if (configuredAppUrl.protocol !== "https:" && configuredAppUrl.hostname !== "localhost") {
         throw new Error("APP_URL must use HTTPS outside localhost");
       }
