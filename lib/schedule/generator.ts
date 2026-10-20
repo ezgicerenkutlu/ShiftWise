@@ -13,10 +13,34 @@
  *  2. Keep the same GeneratedShift[] output shape so the UI needs no changes.
  */
 
-import { startOfDay, startOfWeek } from 'date-fns';
+import { format, startOfDay, startOfWeek } from 'date-fns';
 import type { Employee, GeneratedShift, ShiftGeneratorConfig } from '@/lib/types';
 
-export type AvailableEmployee = Pick<Employee, 'id' | 'full_name' | 'max_weekly_hours'>;
+export type AvailabilityRule = {
+  day_of_week: number;
+  is_available: boolean;
+  start_time: string;
+  end_time: string;
+};
+
+export type AvailabilityOverrideRule = {
+  date: string;
+  is_available: boolean;
+  start_time: string | null;
+  end_time: string | null;
+};
+
+export type TimeOffRule = {
+  start_date: string;
+  end_date: string;
+  status: string;
+};
+
+export type AvailableEmployee = Pick<Employee, 'id' | 'full_name' | 'max_weekly_hours'> & {
+  availability?: AvailabilityRule[];
+  overrides?: AvailabilityOverrideRule[];
+  timeOff?: TimeOffRule[];
+};
 
 export type GeneratorInput = {
   config: ShiftGeneratorConfig;
@@ -58,6 +82,10 @@ function dayInWeek(weekStart: Date, dayOfWeek: number): Date {
   return target;
 }
 
+function formatDateLocal(date: Date): string {
+  return format(date, 'yyyy-MM-dd');
+}
+
 function toISOLocal(date: Date, timeStr: string): string {
   const [h, m] = timeStr.split(':').map(Number);
   const d = startOfDay(date);
@@ -92,6 +120,7 @@ export const rulesBasedEngine: SchedulingEngine = ({ config, availableEmployees 
   // Sorted so the output is chronological
   const sortedDays = [...config.days_of_week].sort((a, b) => a - b);
 
+  const weeklyHoursByEmployee = new Map<string, number>();
   let employeeIndex = 0; // round-robin cursor across the whole week
 
   for (const dow of sortedDays) {
@@ -105,22 +134,52 @@ export const rulesBasedEngine: SchedulingEngine = ({ config, availableEmployees 
       const slotEnd = slotStart + durationMins;
       const timeLabel = `${minutesToTimeString(slotStart)} – ${minutesToTimeString(slotEnd)}`;
 
+      const shiftDate = formatDateLocal(dayDate);
+      const slotStartString = minutesToTimeString(slotStart);
+      const slotEndString = minutesToTimeString(slotEnd);
+      const assignedThisSlot = new Set<string>();
+
       for (let seat = 0; seat < config.min_employees_per_shift; seat++) {
-        const emp = availableEmployees.length > 0
-          ? availableEmployees[employeeIndex % availableEmployees.length]
-          : null;
+        const eligible = availableEmployees.filter((employee) => {
+          if (assignedThisSlot.has(employee.id)) return false;
+          const hoursAlreadyAssigned = weeklyHoursByEmployee.get(employee.id) ?? 0;
+          if (employee.max_weekly_hours != null && hoursAlreadyAssigned + config.shift_duration_hours > employee.max_weekly_hours) return false;
+          if ((employee.timeOff ?? []).some((request) =>
+            request.status === 'approved' && request.start_date <= shiftDate && request.end_date >= shiftDate
+          )) return false;
+
+          const override = (employee.overrides ?? []).find((item) => item.date === shiftDate);
+          if (override) {
+            if (!override.is_available) return false;
+            if (override.start_time && override.end_time &&
+              (override.start_time.slice(0, 5) > slotStartString || override.end_time.slice(0, 5) < slotEndString)) return false;
+            return true;
+          }
+
+          const rules = employee.availability ?? [];
+          if (rules.length === 0) return true;
+          const rule = rules.find((item) => item.day_of_week === dow);
+          if (!rule || !rule.is_available) return false;
+          return rule.start_time.slice(0, 5) <= slotStartString && rule.end_time.slice(0, 5) >= slotEndString;
+        });
+
+        let emp: AvailableEmployee | null = null;
+        if (eligible.length > 0) {
+          emp = eligible[employeeIndex % eligible.length];
+          employeeIndex++;
+          assignedThisSlot.add(emp.id);
+          weeklyHoursByEmployee.set(emp.id, (weeklyHoursByEmployee.get(emp.id) ?? 0) + config.shift_duration_hours);
+        }
 
         results.push({
-          start_time: toISOLocal(dayDate, minutesToTimeString(slotStart)),
-          end_time: toISOLocal(dayDate, minutesToTimeString(slotEnd)),
+          start_time: toISOLocal(dayDate, slotStartString),
+          end_time: toISOLocal(dayDate, slotEndString),
           day_label: dayLabel,
           time_label: timeLabel,
           slot_index: slotIndex,
           employee_id: emp?.id ?? null,
           employee_name: emp?.full_name ?? null,
         });
-
-        if (availableEmployees.length > 0) employeeIndex++;
       }
 
       slotStart += durationMins;
