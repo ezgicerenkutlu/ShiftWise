@@ -222,7 +222,13 @@ function CustomEventWrapper({
     <div
       className="group relative h-full w-full cursor-pointer overflow-hidden rounded-md"
       style={{ borderLeft: `3px solid ${color}` }}
-      onClick={() => onEventClick(event)}
+      onClickCapture={(e) => {
+        // Capture the click before react-big-calendar's inner event handler
+        // can stop propagation. Ignore the event action menu button.
+        const target = e.target as HTMLElement;
+        if (target.closest('button, [role="menuitem"]')) return;
+        onEventClick(event);
+      }}
     >
       {children}
       {isManager && (
