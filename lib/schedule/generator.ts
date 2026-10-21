@@ -157,7 +157,9 @@ export const rulesBasedEngine: SchedulingEngine = ({ config, availableEmployees 
           }
 
           const rules = employee.availability ?? [];
-          if (rules.length === 0) return true;
+          // Do not assume availability when an employee has no saved weekly rules.
+          // A manager should only assign employees to slots they explicitly marked available.
+          if (rules.length === 0) return false;
           const rule = rules.find((item) => item.day_of_week === dow);
           if (!rule || !rule.is_available) return false;
           return rule.start_time.slice(0, 5) <= slotStartString && rule.end_time.slice(0, 5) >= slotEndString;
