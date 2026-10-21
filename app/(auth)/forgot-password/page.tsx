@@ -18,19 +18,24 @@ export default function ForgotPasswordPage() {
     e.preventDefault();
     setLoading(true);
 
-    const supabase = createClient();
-    const { error } = await supabase.auth.resetPasswordForEmail(email, {
-      redirectTo: `${window.location.origin}/reset-password`,
-    });
+    try {
+      const supabase = createClient();
+      const { error } = await supabase.auth.resetPasswordForEmail(email.trim(), {
+        redirectTo: `${window.location.origin}/reset-password`,
+      });
 
-    if (error) {
-      toast.error(error.message);
+      if (error) {
+        toast.error(error.message);
+        setLoading(false);
+        return;
+      }
+
+      setSent(true);
+    } catch {
+      toast.error('Unable to request a password reset right now. Check your connection and try again.');
+    } finally {
       setLoading(false);
-      return;
     }
-
-    setSent(true);
-    setLoading(false);
   }
 
   if (sent) {

@@ -63,6 +63,125 @@ type WeeklySlot = {
 
 type OverrideEntry = AvailabilityOverride;
 
+
+type TeamAvailabilityRow = {
+  employee_id: string;
+  restaurant_id: string;
+  day_of_week: number;
+  is_available: boolean;
+  start_time: string;
+  end_time: string;
+};
+
+type TeamAvailabilityOverride = {
+  id: string;
+  employee_id: string;
+  date: string;
+  is_available: boolean;
+  start_time: string | null;
+  end_time: string | null;
+  reason: string | null;
+};
+
+function ManagerAvailabilityPage({ restaurantId }: { restaurantId: string }) {
+  const [team, setTeam] = useState<Employee[]>([]);
+  const [weekly, setWeekly] = useState<TeamAvailabilityRow[]>([]);
+  const [overrides, setOverrides] = useState<TeamAvailabilityOverride[]>([]);
+  const [loadingTeam, setLoadingTeam] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    const supabase = createClient();
+    (async () => {
+      setLoadingTeam(true);
+      setLoadError(null);
+      const [employeesResult, weeklyResult, overrideResult] = await Promise.all([
+        supabase.from('employees').select('*').eq('restaurant_id', restaurantId).eq('is_active', true).order('full_name'),
+        supabase.from('availability').select('*').eq('restaurant_id', restaurantId),
+        supabase.from('availability_overrides').select('*').eq('restaurant_id', restaurantId).gte('date', format(new Date(), 'yyyy-MM-dd')).order('date'),
+      ]);
+      if (cancelled) return;
+      if (employeesResult.error || weeklyResult.error || overrideResult.error) {
+        setLoadError('Could not load all team availability. Check the manager access policies and try refreshing.');
+      } else {
+        setTeam((employeesResult.data as Employee[]) ?? []);
+        setWeekly((weeklyResult.data as TeamAvailabilityRow[]) ?? []);
+        setOverrides((overrideResult.data as TeamAvailabilityOverride[]) ?? []);
+      }
+      setLoadingTeam(false);
+    })();
+    return () => { cancelled = true; };
+  }, [restaurantId]);
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h1 className="text-2xl font-bold tracking-tight">Team availability</h1>
+        <p className="mt-1 text-sm text-muted-foreground">View every active employee's recurring availability and upcoming one-time changes.</p>
+      </div>
+      {loadError && <div role="alert" className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">{loadError}</div>}
+      {loadingTeam ? (
+        <div className="flex h-48 items-center justify-center"><div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" /></div>
+      ) : team.length === 0 ? (
+        <Card><CardContent className="flex min-h-48 items-center justify-center text-sm text-muted-foreground">No active employees yet. Invite team members and have them accept the invitation first.</CardContent></Card>
+      ) : (
+        <div className="space-y-4">
+          {team.map((emp) => {
+            const empSlots = weekly.filter((slot) => slot.employee_id === emp.id);
+            const empOverrides = overrides.filter((override) => override.employee_id === emp.id);
+            return (
+              <Card key={emp.id} className="border-border/60">
+                <CardHeader className="pb-3">
+                  <div className="flex flex-wrap items-start justify-between gap-2">
+                    <div>
+                      <CardTitle className="text-base">{emp.full_name}</CardTitle>
+                      <CardDescription>{emp.job_title || emp.email || 'Team member'}{emp.max_weekly_hours ? ` · ${emp.max_weekly_hours} max hours/week` : ''}</CardDescription>
+                    </div>
+                    <Badge variant="secondary">{empSlots.filter((s) => s.is_available).length}/7 days available</Badge>
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+                    {DAYS_OF_WEEK.map((day) => {
+                      const slot = empSlots.find((s) => s.day_of_week === day.value);
+                      const available = slot?.is_available ?? false;
+                      return (
+                        <div key={day.value} className="flex items-center justify-between gap-2 rounded-md border border-border/60 p-3">
+                          <div>
+                            <p className="text-sm font-medium">{day.label}</p>
+                            <p className="text-xs text-muted-foreground">{available && slot ? `${slot.start_time.slice(0, 5)}–${slot.end_time.slice(0, 5)}` : 'Unavailable / not set'}</p>
+                          </div>
+                          <Badge variant={available ? 'default' : 'outline'}>{available ? 'Available' : 'Unavailable'}</Badge>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {empOverrides.length > 0 && (
+                    <div className="border-t border-border/60 pt-3">
+                      <p className="mb-2 text-sm font-medium">Upcoming date-specific changes</p>
+                      <div className="flex flex-wrap gap-2">
+                        {empOverrides.map((ov) => (
+                          <div key={ov.id} className="rounded-md border border-border/60 px-3 py-2 text-xs">
+                            <span className="font-medium">{format(parseISO(ov.date), 'EEE, MMM d')}</span>
+                            <span className="mx-2 text-muted-foreground">·</span>
+                            <span>{ov.is_available ? `Available ${ov.start_time && ov.end_time ? `${ov.start_time.slice(0,5)}–${ov.end_time.slice(0,5)}` : 'all day'}` : 'Unavailable'}</span>
+                            {ov.reason && <span className="ml-2 text-muted-foreground">({ov.reason})</span>}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function AvailabilityPage() {
   const { profile, restaurant } = useAuthStore();
   const [employee, setEmployee] = useState<Employee | null>(null);
@@ -265,6 +384,10 @@ export default function AvailabilityPage() {
   }
 
   const hasDirty = weeklySlots.some((s) => s.dirty);
+
+  if (profile?.role === 'manager' && restaurant?.id) {
+    return <ManagerAvailabilityPage restaurantId={restaurant.id} />;
+  }
 
   if (loading) {
     return (
