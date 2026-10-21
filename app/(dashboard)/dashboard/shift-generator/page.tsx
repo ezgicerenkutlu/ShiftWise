@@ -285,7 +285,7 @@ export default function ShiftGeneratorPage() {
         supabase.from('vacation_requests').select('employee_id, start_date, end_date, status').eq('restaurant_id', restaurant.id).eq('status', 'approved'),
       ]);
       if (empResult.data) {
-        const enrichedEmployees: AvailableEmployee[] = empResult.data.map((employee) => ({
+        const enrichedEmployees: AvailableEmployee[] = empResult.data.map((employee: Pick<Employee, 'id' | 'full_name' | 'max_weekly_hours'>) => ({
           ...employee,
           availability: (availabilityResult.data ?? []).filter((rule) => rule.employee_id === employee.id),
           overrides: (overridesResult.data ?? []).filter((override) => override.employee_id === employee.id),
