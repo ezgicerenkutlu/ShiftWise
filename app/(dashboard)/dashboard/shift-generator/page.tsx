@@ -287,9 +287,9 @@ export default function ShiftGeneratorPage() {
       if (empResult.data) {
         const enrichedEmployees: AvailableEmployee[] = empResult.data.map((employee: Pick<Employee, 'id' | 'full_name' | 'max_weekly_hours'>) => ({
           ...employee,
-          availability: (availabilityResult.data ?? []).filter((rule) => rule.employee_id === employee.id),
-          overrides: (overridesResult.data ?? []).filter((override) => override.employee_id === employee.id),
-          timeOff: (timeOffResult.data ?? []).filter((request) => request.employee_id === employee.id),
+          availability: (availabilityResult.data ?? []).filter((rule: { employee_id: string; day_of_week: number; is_available: boolean; start_time: string; end_time: string }) => rule.employee_id === employee.id),
+          overrides: (overridesResult.data ?? []).filter((override: { employee_id: string; date: string; is_available: boolean; start_time: string | null; end_time: string | null }) => override.employee_id === employee.id),
+          timeOff: (timeOffResult.data ?? []).filter((request: { employee_id: string; start_date: string; end_date: string; status: string }) => request.employee_id === employee.id),
         }));
         setEmployees(enrichedEmployees);
       }
