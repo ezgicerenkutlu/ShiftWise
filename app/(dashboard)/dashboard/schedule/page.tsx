@@ -695,6 +695,7 @@ export default function SchedulePage() {
                 popup
                 {...dndProps}
                 onSelectSlot={handleSelectSlot}
+                onDoubleClickEvent={openEditDialog}
                 components={{
                   toolbar: (props: { label: string; onNavigate: (action: NavigateAction, date?: Date) => void; onView: (view: View) => void }) => (
                     <CustomToolbar
