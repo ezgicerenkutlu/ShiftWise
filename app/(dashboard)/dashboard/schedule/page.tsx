@@ -222,11 +222,13 @@ function CustomEventWrapper({
     <div
       className="group relative h-full w-full cursor-pointer overflow-hidden rounded-md"
       style={{ borderLeft: `3px solid ${color}` }}
-      onClickCapture={(e) => {
-        // Capture the click before react-big-calendar's inner event handler
-        // can stop propagation. Ignore the event action menu button.
+      onDoubleClickCapture={(e) => {
+        // Open the editor on a deliberate double-click without interfering
+        // with the calendar's drag-and-drop gesture or the action menu.
         const target = e.target as HTMLElement;
         if (target.closest('button, [role="menuitem"]')) return;
+        e.preventDefault();
+        e.stopPropagation();
         onEventClick(event);
       }}
     >
@@ -693,7 +695,6 @@ export default function SchedulePage() {
                 popup
                 {...dndProps}
                 onSelectSlot={handleSelectSlot}
-                onSelectEvent={openEditDialog}
                 components={{
                   toolbar: (props: { label: string; onNavigate: (action: NavigateAction, date?: Date) => void; onView: (view: View) => void }) => (
                     <CustomToolbar
