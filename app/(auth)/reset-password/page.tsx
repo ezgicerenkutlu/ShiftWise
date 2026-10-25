@@ -19,15 +19,68 @@ export default function ResetPasswordPage() {
   const router = useRouter();
 
   useEffect(() => {
-    const supabase = createClient();
-    supabase.auth.getSession().then(({ data }: { data: { session: unknown } | null }) => {
-      if (!data?.session) {
-        toast.error('Invalid or expired reset link');
+    let active = true;
+
+    async function verifyResetLink() {
+      const supabase = createClient();
+      const url = new URL(window.location.href);
+      const code = url.searchParams.get('code');
+      const hashParams = new URLSearchParams(url.hash.replace(/^#/, ''));
+      const accessToken = hashParams.get('access_token');
+      const refreshToken = hashParams.get('refresh_token');
+      const linkError = url.searchParams.get('error_description') || hashParams.get('error_description');
+
+      if (linkError) {
+        if (active) {
+          toast.error(decodeURIComponent(linkError.replace(/\\+/g, ' ')));
+          router.replace('/forgot-password');
+        }
+        return;
+      }
+
+      // Supabase may deliver recovery links as a PKCE code or as session tokens.
+      // Exchange/set the session before checking it; getSession alone fails for PKCE links.
+      if (code) {
+        const { error } = await supabase.auth.exchangeCodeForSession(code);
+        if (error) {
+          if (active) {
+            toast.error('This password reset link is invalid or expired. Please request a new one.');
+            router.replace('/forgot-password');
+          }
+          return;
+        }
+        window.history.replaceState({}, document.title, url.pathname);
+      } else if (accessToken && refreshToken) {
+        const { error } = await supabase.auth.setSession({
+          access_token: accessToken,
+          refresh_token: refreshToken,
+        });
+        if (error) {
+          if (active) {
+            toast.error('This password reset link is invalid or expired. Please request a new one.');
+            router.replace('/forgot-password');
+          }
+          return;
+        }
+        window.history.replaceState({}, document.title, url.pathname);
+      }
+
+      const { data, error } = await supabase.auth.getSession();
+      if (!active) return;
+
+      if (error || !data.session) {
+        toast.error('This password reset link is invalid or expired. Please request a new one.');
         router.replace('/forgot-password');
         return;
       }
+
       setVerifying(false);
-    });
+    }
+
+    void verifyResetLink();
+    return () => {
+      active = false;
+    };
   }, [router]);
 
   async function handleSubmit(e: React.FormEvent) {
