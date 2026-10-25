@@ -222,7 +222,15 @@ function CustomEventWrapper({
     <div
       className="group relative h-full w-full cursor-pointer overflow-hidden rounded-md"
       style={{ borderLeft: `3px solid ${color}` }}
-      onClick={() => onEventClick(event)}
+      onDoubleClickCapture={(e) => {
+        // Open the editor on a deliberate double-click without interfering
+        // with the calendar's drag-and-drop gesture or the action menu.
+        const target = e.target as HTMLElement;
+        if (target.closest('button, [role="menuitem"]')) return;
+        e.preventDefault();
+        e.stopPropagation();
+        onEventClick(event);
+      }}
     >
       {children}
       {isManager && (
@@ -687,7 +695,7 @@ export default function SchedulePage() {
                 popup
                 {...dndProps}
                 onSelectSlot={handleSelectSlot}
-                onSelectEvent={openEditDialog}
+                onDoubleClickEvent={openEditDialog}
                 components={{
                   toolbar: (props: { label: string; onNavigate: (action: NavigateAction, date?: Date) => void; onView: (view: View) => void }) => (
                     <CustomToolbar

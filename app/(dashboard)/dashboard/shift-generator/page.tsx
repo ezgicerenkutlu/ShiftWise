@@ -263,7 +263,7 @@ export default function ShiftGeneratorPage() {
     if (!restaurant?.id) return;
     (async () => {
       setLoadingData(true);
-      const [empResult, locResult, configResult] = await Promise.all([
+      const [empResult, locResult, configResult, availabilityResult, overridesResult, timeOffResult] = await Promise.all([
         supabase
           .from('employees')
           .select('id, full_name, max_weekly_hours')
@@ -280,8 +280,19 @@ export default function ShiftGeneratorPage() {
           .select('*')
           .eq('restaurant_id', restaurant.id)
           .order('updated_at', { ascending: false }),
+        supabase.from('availability').select('employee_id, day_of_week, is_available, start_time, end_time').eq('restaurant_id', restaurant.id),
+        supabase.from('availability_overrides').select('employee_id, date, is_available, start_time, end_time').eq('restaurant_id', restaurant.id),
+        supabase.from('vacation_requests').select('employee_id, start_date, end_date, status').eq('restaurant_id', restaurant.id).eq('status', 'approved'),
       ]);
-      if (empResult.data) setEmployees(empResult.data);
+      if (empResult.data) {
+        const enrichedEmployees: AvailableEmployee[] = empResult.data.map((employee: Pick<Employee, 'id' | 'full_name' | 'max_weekly_hours'>) => ({
+          ...employee,
+          availability: (availabilityResult.data ?? []).filter((rule: { employee_id: string; day_of_week: number; is_available: boolean; start_time: string; end_time: string }) => rule.employee_id === employee.id),
+          overrides: (overridesResult.data ?? []).filter((override: { employee_id: string; date: string; is_available: boolean; start_time: string | null; end_time: string | null }) => override.employee_id === employee.id),
+          timeOff: (timeOffResult.data ?? []).filter((request: { employee_id: string; start_date: string; end_date: string; status: string }) => request.employee_id === employee.id),
+        }));
+        setEmployees(enrichedEmployees);
+      }
       if (locResult.data) setLocationId(locResult.data.id);
       if (configResult.data) setSavedConfigs(configResult.data);
       setLoadingData(false);
@@ -342,7 +353,7 @@ export default function ShiftGeneratorPage() {
     setSaving(true);
     try {
       // Upsert the config
-      await supabase.from('shift_generator_configs').upsert(
+      const { error: configSaveError } = await supabase.from('shift_generator_configs').upsert(
         {
           restaurant_id: restaurant.id,
           name: form.name,
@@ -356,6 +367,10 @@ export default function ShiftGeneratorPage() {
         },
         { onConflict: 'restaurant_id,name' }
       );
+      if (configSaveError) {
+        setConfigError(`Could not save generator configuration: ${configSaveError.message}`);
+        return;
+      }
 
       // Insert shifts as draft
       const shiftRows = generatedShifts.map((s) => ({
@@ -368,8 +383,15 @@ export default function ShiftGeneratorPage() {
         status: 'draft' as const,
       }));
 
-      await supabase.from('shifts').insert(shiftRows);
+      const { error: shiftsSaveError } = await supabase.from('shifts').insert(shiftRows);
+      if (shiftsSaveError) {
+        setConfigError(`Could not save generated shifts: ${shiftsSaveError.message}`);
+        return;
+      }
+      setConfigError(null);
       setSaved(true);
+    } catch (error) {
+      setConfigError(error instanceof Error ? error.message : 'An unexpected error occurred while saving.');
     } finally {
       setSaving(false);
     }

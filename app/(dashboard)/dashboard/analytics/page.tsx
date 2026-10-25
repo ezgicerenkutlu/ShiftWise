@@ -310,6 +310,48 @@ export default function AnalyticsPage() {
             />
           </div>
 
+          <Card className="border-border/60">
+            <CardHeader>
+              <CardTitle className="text-base">Hours by employee</CardTitle>
+              <CardDescription>
+                Planned hours compared with completed shifts for {weekLabel}. Completed shifts are a proxy for worked hours; actual clock-in/clock-out times are not recorded in this version.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              <div className="overflow-x-auto">
+                <table className="w-full min-w-[520px] text-sm">
+                  <thead>
+                    <tr className="border-b text-left text-muted-foreground">
+                      <th className="py-2 pr-4 font-medium">Employee</th>
+                      <th className="py-2 px-3 text-right font-medium">Planned hours</th>
+                      <th className="py-2 px-3 text-right font-medium">Completed shift hours</th>
+                      <th className="py-2 pl-3 text-right font-medium">Difference</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {employees.map((employee) => {
+                      const employeeWeekShifts = shifts.filter((shift) => {
+                        const start = new Date(shift.start_time);
+                        return shift.employee_id === employee.id && start >= weekStart && start <= new Date(weekStart.getTime() + 7 * 86400000);
+                      });
+                      const planned = employeeWeekShifts.reduce((sum, shift) => sum + Math.max(0, new Date(shift.end_time).getTime() - new Date(shift.start_time).getTime()) / 3600000, 0);
+                      const completed = employeeWeekShifts.filter((shift) => shift.status === 'completed').reduce((sum, shift) => sum + Math.max(0, new Date(shift.end_time).getTime() - new Date(shift.start_time).getTime()) / 3600000, 0);
+                      return (
+                        <tr key={employee.id} className="border-b last:border-0">
+                          <td className="py-3 pr-4 font-medium">{employee.full_name}</td>
+                          <td className="py-3 px-3 text-right tabular-nums">{planned.toFixed(1)} h</td>
+                          <td className="py-3 px-3 text-right tabular-nums">{completed.toFixed(1)} h</td>
+                          <td className={cn("py-3 pl-3 text-right tabular-nums", completed - planned < 0 ? "text-muted-foreground" : "text-emerald-600")}>{(completed - planned).toFixed(1)} h</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+              <p className="mt-3 text-xs text-muted-foreground">For accurate actual worked hours, a clock-in/clock-out feature needs to be added. The current database stores scheduled start/end times and shift status only.</p>
+            </CardContent>
+          </Card>
+
           {/* Row 1: Labor cost trend + Hours per employee */}
           <div className="grid gap-6 lg:grid-cols-2">
             <ChartCard

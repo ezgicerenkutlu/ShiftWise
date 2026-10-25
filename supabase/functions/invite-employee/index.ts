@@ -1,191 +1,228 @@
 import "jsr:@supabase/functions-js/edge-runtime.d.ts";
 import { createClient } from "jsr:@supabase/supabase-js@2";
 
-const corsHeaders = {
-  "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers":
-    "Content-Type, Authorization, X-Client-Info, Apikey",
+const allowedOrigins = new Set(
+  [Deno.env.get("APP_URL"), Deno.env.get("PREVIEW_APP_URL")]
+    .filter((value): value is string => Boolean(value))
+    .map((value) => {
+      try {
+        return new URL(value).origin;
+      } catch {
+        return "";
+      }
+    })
+    .filter(Boolean),
+);
+
+const baseHeaders = {
+  "Access-Control-Allow-Methods": "POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, X-Client-Info, Apikey",
+  "Vary": "Origin",
 };
 
+function response(body: Record<string, unknown>, status: number, origin?: string) {
+  const headers: Record<string, string> = {
+    ...baseHeaders,
+    "Content-Type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+  };
+  if (origin && allowedOrigins.has(origin)) headers["Access-Control-Allow-Origin"] = origin;
+  return new Response(JSON.stringify(body), { status, headers });
+}
+
 interface InviteBody {
-  email: string;
-  role: "manager" | "employee";
-  full_name?: string;
+  email?: unknown;
+  role?: unknown;
+  full_name?: unknown;
 }
 
 Deno.serve(async (req: Request) => {
-  if (req.method === "OPTIONS") {
-    return new Response(null, { status: 200, headers: corsHeaders });
+  const requestOrigin = req.headers.get("origin") ?? undefined;
+
+  if (requestOrigin && !allowedOrigins.has(requestOrigin)) {
+    return response({ error: "Origin not allowed" }, 403);
   }
 
+  if (req.method === "OPTIONS") {
+    if (!requestOrigin || !allowedOrigins.has(requestOrigin)) {
+      return new Response(null, { status: 403, headers: baseHeaders });
+    }
+    return new Response(null, {
+      status: 204,
+      headers: {
+        ...baseHeaders,
+        "Access-Control-Allow-Origin": requestOrigin,
+        "Access-Control-Max-Age": "600",
+      },
+    });
+  }
+
+  if (req.method !== "POST") {
+    return response({ error: "Method not allowed" }, 405, requestOrigin);
+  }
+
+  const supabaseUrl = Deno.env.get("SUPABASE_URL");
+  const anonKey = Deno.env.get("SUPABASE_ANON_KEY");
+  const serviceRoleKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  const appUrl = Deno.env.get("APP_URL");
+
+  if (!supabaseUrl || !anonKey || !serviceRoleKey || !appUrl) {
+    console.error("Invite function configuration is incomplete.");
+    return response({ error: "Invitation service is not configured" }, 500, requestOrigin);
+  }
+
+  const authHeader = req.headers.get("Authorization");
+  if (!authHeader) return response({ error: "Unauthorized" }, 401, requestOrigin);
+
   try {
-    // Require auth — the caller must be a signed-in manager
-    const authHeader = req.headers.get("Authorization");
-    if (!authHeader) {
-      return new Response(JSON.stringify({ error: "Unauthorized" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
+    const userClient = createClient(supabaseUrl, anonKey, {
+      global: { headers: { Authorization: authHeader } },
+      auth: { autoRefreshToken: false, persistSession: false },
+    });
 
-    const supabase = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_ANON_KEY")!,
-      {
-        global: { headers: { Authorization: authHeader } },
-      }
-    );
+    const { data: { user }, error: userError } = await userClient.auth.getUser();
+    if (userError || !user) return response({ error: "Unauthorized" }, 401, requestOrigin);
 
-    // Verify the caller's session
-    const {
-      data: { user },
-      error: userError,
-    } = await supabase.auth.getUser();
-
-    if (userError || !user) {
-      return new Response(JSON.stringify({ error: "Unauthorized" }), {
-        status: 401,
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
-    }
-
-    // Fetch the caller's profile to confirm they're a manager
-    const { data: managerProfile, error: profileError } = await supabase
+    const { data: managerProfile, error: profileError } = await userClient
       .from("profiles")
       .select("id, role, restaurant_id")
       .eq("id", user.id)
       .maybeSingle();
 
     if (profileError || !managerProfile) {
-      return new Response(
-        JSON.stringify({ error: "Profile not found" }),
-        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return response({ error: "Manager profile not found" }, 403, requestOrigin);
+    }
+    if (managerProfile.role !== "manager" || !managerProfile.restaurant_id) {
+      return response({ error: "Only a restaurant manager can invite team members" }, 403, requestOrigin);
     }
 
-    if (managerProfile.role !== "manager") {
-      return new Response(
-        JSON.stringify({ error: "Only managers can invite team members" }),
-        { status: 403, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+    let body: InviteBody;
+    try {
+      body = await req.json();
+    } catch {
+      return response({ error: "Request body must be valid JSON" }, 400, requestOrigin);
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return response({ error: "Invalid request body" }, 400, requestOrigin);
     }
 
-    const body: InviteBody = await req.json();
-    const email = body.email?.toLowerCase().trim();
-    const role = body.role || "employee";
-
-    if (!email) {
-      return new Response(
-        JSON.stringify({ error: "Email is required" }),
-        { status: 400, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+    if (typeof body.email !== "string") {
+      return response({ error: "A valid email is required" }, 400, requestOrigin);
+    }
+    const email = body.email.trim().toLowerCase();
+    if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return response({ error: "A valid email is required" }, 400, requestOrigin);
     }
 
-    // Check if a user with this email already exists in the restaurant
-    const { data: existingProfile } = await supabase
+    // Managers may invite employees only. Privileged manager accounts must be
+    // provisioned through a trusted owner/admin workflow, not a client payload.
+    if (body.role !== undefined && body.role !== "employee") {
+      return response({ error: "Only employee invitations are supported" }, 400, requestOrigin);
+    }
+
+    let fullName = "";
+    if (body.full_name !== undefined) {
+      if (typeof body.full_name !== "string" || body.full_name.length > 100) {
+        return response({ error: "full_name must be a string of at most 100 characters" }, 400, requestOrigin);
+      }
+      fullName = body.full_name.trim().replace(/[\u0000-\u001F\u007F]/g, "");
+    }
+
+    const adminClient = createClient(supabaseUrl, serviceRoleKey, {
+      auth: { autoRefreshToken: false, persistSession: false },
+    });
+
+    const { data: existingProfile, error: existingProfileError } = await userClient
       .from("profiles")
       .select("id")
       .eq("email", email)
       .eq("restaurant_id", managerProfile.restaurant_id)
       .maybeSingle();
 
-    if (existingProfile) {
-      return new Response(
-        JSON.stringify({ error: "This person is already on your team" }),
-        { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+    if (existingProfileError) {
+      console.error("Failed to check existing profile:", existingProfileError.message);
+      return response({ error: "Could not validate team membership" }, 500, requestOrigin);
     }
+    if (existingProfile) return response({ error: "This person is already on your team" }, 409, requestOrigin);
 
-    // Check for an existing pending invitation
-    const { data: existingInvite } = await supabase
+    const { data: existingInvite, error: existingInviteError } = await userClient
       .from("invitations")
       .select("id")
       .eq("email", email)
       .eq("restaurant_id", managerProfile.restaurant_id)
       .eq("status", "pending")
+      .gt("expires_at", new Date().toISOString())
       .maybeSingle();
 
+    if (existingInviteError) {
+      console.error("Failed to check pending invitation:", existingInviteError.message);
+      return response({ error: "Could not validate pending invitations" }, 500, requestOrigin);
+    }
     if (existingInvite) {
-      return new Response(
-        JSON.stringify({ error: "An invitation is already pending for this email" }),
-        { status: 409, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      return response({ error: "An invitation is already pending for this email" }, 409, requestOrigin);
     }
 
-    // Create the invitation record (expires in 7 days)
-    const expiresAt = new Date();
-    expiresAt.setDate(expiresAt.getDate() + 7);
-
-    const { data: invitation, error: inviteError } = await supabase
+    const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString();
+    const { data: invitation, error: inviteError } = await adminClient
       .from("invitations")
       .insert({
         restaurant_id: managerProfile.restaurant_id,
         email,
-        role,
+        role: "employee",
         status: "pending",
-        expires_at: expiresAt.toISOString(),
+        expires_at: expiresAt,
       })
-      .select()
+      .select("id, email, role, status, expires_at, created_at")
       .single();
 
-    if (inviteError) {
-      return new Response(
-        JSON.stringify({ error: "Failed to create invitation" }),
-        { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+    if (inviteError || !invitation) {
+      console.error("Failed to create invitation:", inviteError?.message);
+      return response({ error: "Failed to create invitation" }, 500, requestOrigin);
     }
 
-    // Send the invite email via Supabase Auth's invite-by-email feature
-    // This creates an auth user (if one doesn't exist) and sends them a link
-    const adminClient = createClient(
-      Deno.env.get("SUPABASE_URL")!,
-      Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
-      {
-        auth: {
-          autoRefreshToken: false,
-          persistSession: false,
-        },
+    let redirectTo: string;
+    try {
+      // Keep invitation links inside the same environment that initiated the
+      // request. Preview invites must not accidentally redirect to Production.
+      const previewAppUrl = Deno.env.get("PREVIEW_APP_URL");
+      const redirectBase = requestOrigin && previewAppUrl && new URL(previewAppUrl).origin === requestOrigin
+        ? previewAppUrl
+        : appUrl;
+      const configuredAppUrl = new URL(redirectBase);
+      if (configuredAppUrl.protocol !== "https:" && configuredAppUrl.hostname !== "localhost") {
+        throw new Error("APP_URL must use HTTPS outside localhost");
       }
-    );
+      redirectTo = new URL("/accept-invite", configuredAppUrl).toString();
+    } catch {
+      await adminClient.from("invitations").delete().eq("id", invitation.id);
+      console.error("APP_URL is invalid; invitation was rolled back.");
+      return response({ error: "Invitation service is not configured correctly" }, 500, requestOrigin);
+    }
 
-    const { error: sendError } = await adminClient.auth.admin.inviteUserByEmail(
-      email,
-      {
-        redirectTo: `${req.headers.get("origin") || Deno.env.get("SUPABASE_PUBLIC_URL") || ""}/accept-invite`,
-        data: {
-          restaurant_id: managerProfile.restaurant_id,
-          role,
-          full_name: body.full_name || "",
-        },
-      }
-    );
+    const { error: sendError } = await adminClient.auth.admin.inviteUserByEmail(email, {
+      redirectTo,
+      data: {
+        // Metadata is not authoritative for authorization. The DB trigger must
+        // derive role and restaurant membership from the pending invitation.
+        full_name: fullName,
+      },
+    });
 
     if (sendError) {
-      // If the email send fails, still keep the invitation record
-      // The manager can resend later
-      console.error("Failed to send invite email:", sendError.message);
-      return new Response(
-        JSON.stringify({
-          warning: "Invitation created but email could not be sent",
-          invitation,
-        }),
-        { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-      );
+      console.error("Failed to send invitation email:", sendError.message);
+      const { error: rollbackError } = await adminClient
+        .from("invitations")
+        .delete()
+        .eq("id", invitation.id);
+      if (rollbackError) {
+        console.error("Failed to roll back invitation after email failure:", rollbackError.message);
+      }
+      return response({ error: "Invitation email could not be sent; please try again" }, 502, requestOrigin);
     }
 
-    return new Response(
-      JSON.stringify({
-        message: "Invitation sent successfully",
-        invitation,
-      }),
-      { status: 200, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
-  } catch (err) {
-    console.error("Invite error:", err);
-    return new Response(
-      JSON.stringify({ error: "An unexpected error occurred" }),
-      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
-    );
+    return response({ message: "Invitation sent successfully", invitation }, 201, requestOrigin);
+  } catch (error) {
+    console.error("Invite error:", error instanceof Error ? error.message : "Unknown error");
+    return response({ error: "An unexpected error occurred" }, 500, requestOrigin);
   }
 });

@@ -21,17 +21,25 @@ export default function LoginPage() {
     e.preventDefault();
     setLoading(true);
 
-    const supabase = createClient();
-    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    try {
+      const supabase = createClient();
+      const { error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
 
-    if (error) {
-      toast.error(error.message);
+      if (error) {
+        toast.error(error.message);
+        setLoading(false);
+        return;
+      }
+
+      router.push('/dashboard');
+      router.refresh();
+    } catch {
+      toast.error('Unable to sign in right now. Check your connection and try again.');
       setLoading(false);
-      return;
     }
-
-    router.push('/dashboard');
-    router.refresh();
   }
 
   return (
